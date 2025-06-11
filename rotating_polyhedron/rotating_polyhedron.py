@@ -3,7 +3,6 @@ import math
 import time
 import os
 import sys
-import shutil
 
 class Polyhedron:
     def __init__(self, shape='cube', side_length=29, aspect_ratio=1.67, draw_faces=False):
