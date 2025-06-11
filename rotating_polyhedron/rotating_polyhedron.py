@@ -246,7 +246,7 @@ class Polyhedron:
             # calculate the render matrix based on the rotated cube and display it
             self.print_render(polyhedron=temp_polyhedron)
             # sleep
-            time.sleep(0.05)
+            time.sleep(0.01)
 
 
 if __name__ == '__main__':
@@ -260,7 +260,7 @@ if __name__ == '__main__':
     except:
         # no or incorrect user input was provided, so we use standard
         side_length = 29
-        theta = np.array([0.1, 0.01, 0.05])
+        theta = np.array([0.02, 0.002, 0.001])
         shape = 'cube'
         draw_faces = 1
     
