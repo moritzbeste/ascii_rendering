@@ -7,15 +7,19 @@ import sys
 class Polyhedron:
     def __init__(self, shape='cube', side_length=29, aspect_ratio=1.67, draw_faces=False):
         self.camera_vector = np.array([0, 0, -1])
-        self.draw_faces = draw_faces
-        self.lookup_symbols = np.array([' ', ':', ';', '!', '<', '~', '-', '+', '?', '/', '|', '*', '$', '%', '#', '@'])
+
+        self.lookup_symbols = np.array([' ', ':', ';', '!', '-', '~', '+', '<', '?', '/', '|', '*', '0', '$', '%', '#', '@'])
         self.lookup_black = len(self.lookup_symbols) - 1
+
         self.aspect_ratio = aspect_ratio
+        self.aspect_ratio_transformation_matrix = np.array([[self.aspect_ratio, 0, 0], [0, 1, 0], [0, 0, 1]])
+
         self.shape = shape
         self.side_length = side_length
         self.polyhedron, self.render = self.generate_polyhedron_and_render()
         self.c = np.mean(self.polyhedron, axis=0)
         self.polyhedron_offset = self.polyhedron - self.c
+
         if draw_faces: 
             self.draw_method = self.render_polyhedron_faces
             self.lookup_faces = {'cube' : 
@@ -25,6 +29,10 @@ class Polyhedron:
             if self.shape not in self.lookup_faces:
                 raise NotImplementedError(f"Dynamic lighting for shape {self.shape} not supported.")
             self.faces = self.lookup_faces[self.shape]
+
+            self.triangles = {}
+            for face_index, face in enumerate(self.faces):
+                self.triangles[face_index] = self.triangulate_convex_polygon(face)
         else:
             self.draw_method = self.render_polyhedron_edges
             self.lookup_edges = {'cube' : 
@@ -39,6 +47,28 @@ class Polyhedron:
             if self.shape not in self.lookup_edges:
                 raise NotImplementedError(f"edges for shape {self.shape} not supported.")
             self.edges = self.lookup_edges[self.shape]
+
+            self.density_lookup = {}
+            self.num_sections = 64
+            for i in range(self.num_sections):
+                angle = i / (self.num_sections - 1)
+                density_modifier = 1 + (self.aspect_ratio - 1) * angle
+                density = np.linspace(0, 1, num=int(self.side_length * density_modifier)).reshape(-1, 1)
+                self.density_lookup[i] = density
+
+
+
+    # fan triangulation of a convex polygon
+    def triangulate_convex_polygon(self, face):
+        # triangulation of convex polygon
+        # we choose a pivot and then use fan triangulation
+        triangles = []
+        n = len(face)
+        if n < 3:
+            raise ValueError("Polygon has less than 3 verticies.")
+        for i in range(1, n - 1):
+            triangles.append((face[0], face[i], face[i + 1]))
+        return triangles
 
 
     # generates the rotation matrix for the x element of theta
@@ -124,35 +154,21 @@ class Polyhedron:
 
     # renders the polyhedron as a wire frame
     def render_polyhedron_edges(self, polyhedron):
-        # adjust the polyhedron based on the aspect ratio of monospace font
-        polyhedron[:, 0] *= self.aspect_ratio
         # iterate over the edges of the polyhedron
         for endpoint_0, endpoint_1 in self.edges:
             # we calculate a new density modifier for the lines so that vertical lines have less density and horizontal lines have more density because of the aspect ratio of monospace font
             dx = np.abs(polyhedron[endpoint_1][0] - polyhedron[endpoint_0][0])
             dy = np.abs(polyhedron[endpoint_1][1] - polyhedron[endpoint_0][1])
             angle = 2 * np.abs(np.arctan2(dy, dx)) / np.pi
-            angle = 1 - angle
-            density_modifier = 1 + (self.aspect_ratio - 1) * angle
-            density = np.linspace(0, 1, num=int(self.side_length * density_modifier)).reshape(-1, 1)
+            inverted_angle = 1 - angle
+            angle_section_index = np.clip(np.round(inverted_angle * self.num_sections).astype(int), 0, self.num_sections - 1)
+            # lookup closest density in lookup table
+            density = self.density_lookup[angle_section_index]
 
             # calculate points on the edge based on the calculated density
             points = np.round(polyhedron[endpoint_0] + density * (polyhedron[endpoint_1] - polyhedron[endpoint_0])).astype(int)
             # draw the indexes of the symbols in the render matrix
             self.render[np.clip(points[:, 1], 0, self.render.shape[0] - 1), np.clip(points[:, 0], 0, self.render.shape[1] - 1)] = self.lookup_black
-    
-
-    # fan triangulation of a convex polygon
-    def triangulate_convex_polygon(self, face):
-        # triangulation of convex polygon
-        # we choose a pivot and then use fan triangulation
-        triangles = []
-        n = len(face)
-        if n < 3:
-            raise ValueError("Polygon has less than 3 verticies.")
-        for i in range(1, n - 1):
-            triangles.append((face[0], face[i], face[i + 1]))
-        return triangles
 
 
     # rendering the triangle
@@ -186,8 +202,7 @@ class Polyhedron:
 
     # render the polyhedron faces with shading
     def render_polyhedron_faces(self, polyhedron):
-        polyhedron[:, 0] *= self.aspect_ratio
-        for face in self.faces:
+        for face_index, face in enumerate(self.faces):
             # we only need 3 points to calculate the normal vector and they should be indexed in counter clockwise orientation
             p1 = polyhedron[face[0]]
             p2 = polyhedron[face[1]]
@@ -201,12 +216,10 @@ class Polyhedron:
             # check if the face is facing away
             dot_product = np.dot(normalized_normal_vector, self.camera_vector)
             if dot_product < 0:
-                # find triangles in order to render a convex polyhedron
-                triangles = self.triangulate_convex_polygon(face)
                 # calculate shading for a face
                 symbol_index = np.clip(a=int(len(self.lookup_symbols) * dot_product * -1), a_min=0, a_max=len(self.lookup_symbols) - 1)
                 # fill in the render matrix
-                for triangle in triangles:
+                for triangle in self.triangles[face_index]:
                     self.fill_triangle(polyhedron, triangle, shade_index=symbol_index)
                     
 
@@ -235,6 +248,7 @@ class Polyhedron:
             rotation_matrix = self.multi_dim_rotation(total_theta)
             # rotate the cube
             temp_polyhedron = self.polyhedron_offset @ rotation_matrix + self.c
+            temp_polyhedron = temp_polyhedron @ self.aspect_ratio_transformation_matrix
             # calculate the render matrix based on the rotated cube and display it
             self.print_render(polyhedron=temp_polyhedron)
             # sleep
