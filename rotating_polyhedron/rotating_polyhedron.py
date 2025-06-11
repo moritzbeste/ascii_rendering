@@ -3,6 +3,7 @@ import math
 import time
 import os
 import sys
+import shutil
 
 class Polyhedron:
     def __init__(self, shape='cube', side_length=29, aspect_ratio=1.67, draw_faces=False):
@@ -148,10 +149,6 @@ class Polyhedron:
         return polyhedron, render
 
 
-    def clear_terminal(self):
-        os.system('cls' if os.name == 'nt' else 'clear')
-
-
     # renders the polyhedron as a wire frame
     def render_polyhedron_edges(self, polyhedron):
         # iterate over the edges of the polyhedron
@@ -221,20 +218,17 @@ class Polyhedron:
                 # fill in the render matrix
                 for triangle in self.triangles[face_index]:
                     self.fill_triangle(polyhedron, triangle, shade_index=symbol_index)
-                    
 
-    # first fill render matrix and then map the render matrix elements to corresponding chars and print
     def print_render(self, polyhedron):
-        # calculate render matrix using preferred draw method
         self.draw_method(polyhedron)
-        # map render matrix elements to corresponding symbols
         char_matrix = self.lookup_symbols[self.render]
-        # cleanup
         self.render.fill(0)
-        self.clear_terminal()
-        # print
+
+        # Move cursor to top-left using ANSI escape code
+        sys.stdout.write('\033[H\033[2J\033[3J')  # clear screen and reset cursor
         for row in char_matrix:
-            print(''.join(row))
+            sys.stdout.write(''.join(row) + '\n')
+        sys.stdout.flush()
 
 
     # game loop
@@ -265,10 +259,10 @@ if __name__ == '__main__':
         draw_faces = str(sys.argv[6])
     except:
         # no or incorrect user input was provided, so we use standard
-        side_length = 29 
+        side_length = 29
         theta = np.array([0.1, 0.01, 0.05])
         shape = 'cube'
         draw_faces = 1
     
-    poly = Polyhedron(shape=shape, side_length=29, draw_faces=draw_faces)
+    poly = Polyhedron(shape=shape, side_length=side_length, draw_faces=draw_faces)
     poly.consistently_rotate_polyhedron(theta)
