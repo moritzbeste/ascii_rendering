@@ -9,7 +9,7 @@ class Polyhedron:
     def __init__(self, shape='cube', side_length=29, aspect_ratio=1.67, draw_faces=False):
         self.camera_vector = np.array([0, 0, -1])
 
-        self.lookup_symbols = np.array([' ', ':', ';', '!', '-', '~', '+', '<', '?', '/', '|', '*', '0', '$', '%', '#', '@'])
+        self.lookup_symbols = np.array([' ', ':', ';', '!', '-', '~', '+', '<', '?', '/', '|', '*', 'O', '$', '%', '#', '@'])
         self.lookup_black = len(self.lookup_symbols) - 1
 
         self.aspect_ratio = aspect_ratio
