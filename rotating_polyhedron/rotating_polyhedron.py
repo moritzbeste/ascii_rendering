@@ -3,6 +3,61 @@ import math
 import time
 import sys
 
+
+class Shape_Registry:
+    shape_registry = {}
+
+    @classmethod
+    def register(cls, shape):
+        def wrapper(func):
+            cls.shape_registry[shape] = func
+            return func
+        return wrapper
+
+    @classmethod
+    def get(cls, shape):
+        if shape not in cls.shape_registry:
+            raise NotImplementedError(f"The shape {shape} is not supported.")
+        return cls.shape_registry[shape]
+
+
+# generates corner points for a cube
+@Shape_Registry.register("cube")
+def generate_cube_corners(higher, lower):
+    verticies = np.array([
+            [higher, higher, higher],
+            [higher, higher, lower],
+            [higher, lower, higher],
+            [higher, lower, lower],
+            [lower, higher, higher],
+            [lower, higher, lower],
+            [lower, lower, higher],
+            [lower, lower, lower]])
+    faces = np.array([[0, 4, 6, 2], [2, 6, 7, 3], [4, 5, 7, 6], [1, 3, 7, 5], [0, 1, 5, 4], [0, 2, 3, 1]])
+    edges = np.array([[0, 1], [0, 2], [0, 4],
+                [3, 1], [3, 2], [3, 7],
+                [5, 1], [5, 4], [5, 7],
+                [6, 2], [6, 4], [6, 7]])
+    return verticies, faces, edges
+
+
+# generates corner points for an octahedron
+@Shape_Registry.register("octahedron")
+def generate_octahedron_corners(higher, lower):
+    verticies = np.array([
+            [(higher + lower) // 2, higher, higher],
+            [(higher + lower) // 2, higher, lower],
+            [(higher + lower) // 2, lower, higher],
+            [(higher + lower) // 2, lower, lower],
+            [higher, (higher + lower) // 2, (higher + lower) // 2],
+            [lower, (higher + lower) // 2, (higher + lower) // 2]])
+    faces = np.array([[0, 2, 4], [2, 5, 3], [2, 3, 4], [0, 5, 2], [1, 3, 5], [0, 4, 1], [0, 1, 5], [1, 4, 3]])
+    edges = np.array([[0, 1], [0, 2], [3, 1], [3, 2],
+                [4, 0],  [4, 1], [4, 2], [4, 3],
+                [5, 0],  [5, 1], [5, 2], [5, 3]])
+    return verticies, faces, edges
+
+
 class Polyhedron:
     def __init__(self, shape='cube', side_length=29, aspect_ratio=1.67, draw_faces=False):
         self.camera_vector = np.array([0, 0, -1])
@@ -13,40 +68,20 @@ class Polyhedron:
         self.aspect_ratio = aspect_ratio
         self.aspect_ratio_transformation_matrix = np.array([[self.aspect_ratio, 0, 0], [0, 1, 0], [0, 0, 1]])
 
+        self.Shape_Registry = Shape_Registry()
         self.shape = shape
         self.side_length = side_length
-        self.polyhedron, self.render = self.generate_polyhedron_and_render()
+        self.polyhedron, self.render, self.faces, self.edges = self.generate_polyhedron_and_render()
         self.c = np.mean(self.polyhedron, axis=0)
         self.polyhedron_offset = self.polyhedron - self.c
 
         if draw_faces: 
             self.draw_method = self.render_polyhedron_faces
-            self.lookup_faces = {'cube' : 
-                np.array([[0, 4, 6, 2], [2, 6, 7, 3], [4, 5, 7, 6], [1, 3, 7, 5], [0, 1, 5, 4], [0, 2, 3, 1]]),
-                'octahedron' : 
-                np.array([[0, 2, 4], [2, 5, 3], [2, 3, 4], [0, 5, 2], [1, 3, 5], [0, 4, 1], [0, 1, 5], [1, 4, 3]])}
-            if self.shape not in self.lookup_faces:
-                raise NotImplementedError(f"Dynamic lighting for shape {self.shape} not supported.")
-            self.faces = self.lookup_faces[self.shape]
-
             self.triangles = {}
             for face_index, face in enumerate(self.faces):
                 self.triangles[face_index] = self.triangulate_convex_polygon(face)
         else:
             self.draw_method = self.render_polyhedron_edges
-            self.lookup_edges = {'cube' : 
-                np.array([[0, 1], [0, 2], [0, 4],
-                [3, 1], [3, 2], [3, 7],
-                [5, 1], [5, 4], [5, 7],
-                [6, 2], [6, 4], [6, 7]]),
-                'octahedron' :
-                np.array([[0, 1], [0, 2], [3, 1], [3, 2],
-                [4, 0],  [4, 1], [4, 2], [4, 3],
-                [5, 0],  [5, 1], [5, 2], [5, 3]])}
-            if self.shape not in self.lookup_edges:
-                raise NotImplementedError(f"edges for shape {self.shape} not supported.")
-            self.edges = self.lookup_edges[self.shape]
-
             self.density_lookup = {}
             self.num_sections = 64
             for i in range(self.num_sections):
@@ -104,30 +139,6 @@ class Polyhedron:
         return rotation_matrix
 
 
-    # generates corner points for a cube
-    def generate_cube_corners(self, higher, lower):
-        return np.array([
-                [higher, higher, higher],
-                [higher, higher, lower],
-                [higher, lower, higher],
-                [higher, lower, lower],
-                [lower, higher, higher],
-                [lower, higher, lower],
-                [lower, lower, higher],
-                [lower, lower, lower]])
-
-
-    # generates corner points for an octahedron
-    def generate_octahedron_corners(self, higher, lower):
-        return np.array([
-                [(higher + lower) // 2, higher, higher],
-                [(higher + lower) // 2, higher, lower],
-                [(higher + lower) // 2, lower, higher],
-                [(higher + lower) // 2, lower, lower],
-                [higher, (higher + lower) // 2, (higher + lower) // 2],
-                [lower, (higher + lower) // 2, (higher + lower) // 2]])
-
-
     # generates a general polyhedron and instantiates the render matrix
     def generate_polyhedron_and_render(self):
         render_dim = (math.ceil(self.side_length * np.sqrt(3)), math.ceil(self.side_length * np.sqrt(3)))
@@ -136,15 +147,12 @@ class Polyhedron:
         higher = render_dim[0] // 2 + dist_to_center
         
         # generate the polyhedron
-        if self.shape == 'cube':
-            polyhedron = self.generate_cube_corners(higher, lower)
-        elif self.shape == 'octahedron':
-            polyhedron = self.generate_octahedron_corners(higher, lower)
+        polyhedron, faces, edges = self.Shape_Registry.get(shape)(higher, lower)
 
         # instantiate the render matrix
         render = np.zeros((render_dim[0], math.ceil(render_dim[1] * self.aspect_ratio)), dtype=int)
 
-        return polyhedron, render
+        return polyhedron, render, faces, edges
 
 
     # renders the polyhedron as a wire frame
@@ -212,10 +220,11 @@ class Polyhedron:
             dot_product = np.dot(normalized_normal_vector, self.camera_vector)
             if dot_product < 0:
                 # calculate shading for a face
-                symbol_index = np.clip(a=int(len(self.lookup_symbols) * dot_product * -1), a_min=0, a_max=len(self.lookup_symbols) - 1)
+                symbol_index = np.clip(a=int((len(self.lookup_symbols) - 1) * dot_product * -1 + 1), a_min=0, a_max=len(self.lookup_symbols) - 1)
                 # fill in the render matrix
                 for triangle in self.triangles[face_index]:
                     self.fill_triangle(polyhedron, triangle, shade_index=symbol_index)
+
 
     def print_render(self, polyhedron):
         self.draw_method(polyhedron)
@@ -223,9 +232,8 @@ class Polyhedron:
         self.render.fill(0)
 
         # Move cursor to top-left using ANSI escape code
-        sys.stdout.write('\033[H\033[2J\033[3J')  # clear screen and reset cursor
-        for row in char_matrix:
-            sys.stdout.write(''.join(row) + '\n')
+        output = '\033[H\033[2J\033[3J' + '\n'.join(''.join(row) for row in char_matrix) + '\n' # move cursor to overwrite screen and create string representation
+        sys.stdout.write(output)
         sys.stdout.flush()
 
 
@@ -258,7 +266,7 @@ if __name__ == '__main__':
         # no or incorrect user input was provided, so we use standard
         side_length = 29
         theta = np.array([0.02, 0.002, 0.001])
-        shape = 'cube'
+        shape = 'octahedron'
         draw_faces = 1
     
     poly = Polyhedron(shape=shape, side_length=side_length, draw_faces=draw_faces)
