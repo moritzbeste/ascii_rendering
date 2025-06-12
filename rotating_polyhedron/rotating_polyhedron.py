@@ -1,7 +1,6 @@
 import numpy as np
 import math
 import time
-import os
 import sys
 
 class Polyhedron:
@@ -232,7 +231,6 @@ class Polyhedron:
 
     # game loop
     def consistently_rotate_polyhedron(self, theta=np.array([0.1, 0.01, 0.05])):
-        # due to rounding erros we need to change the angle of rotation of a static cube instead of actually rotating the cube
         total_theta = np.array([0.0, 0.0, 0.0])
         while(True):
             # update theta
@@ -255,7 +253,7 @@ if __name__ == '__main__':
         side_length = int(sys.argv[1])
         theta = np.array([float(sys.argv[2]), float(sys.argv[3]), float(sys.argv[4])])
         shape = str(sys.argv[5])
-        draw_faces = str(sys.argv[6])
+        draw_faces = bool(int(sys.argv[6]))
     except:
         # no or incorrect user input was provided, so we use standard
         side_length = 29
