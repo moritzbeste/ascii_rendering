@@ -220,7 +220,7 @@ class Polyhedron:
             dot_product = np.dot(normalized_normal_vector, self.camera_vector)
             if dot_product < 0:
                 # calculate shading for a face
-                symbol_index = np.clip(a=int((len(self.lookup_symbols)) * dot_product * -1), a_min=1, a_max=len(self.lookup_symbols) - 1)
+                symbol_index = np.clip(a=int((len(self.lookup_symbols)) * -dot_product), a_min=1, a_max=len(self.lookup_symbols) - 1)
                 # fill in the render matrix
                 for triangle in self.triangles[face_index]:
                     self.fill_triangle(polyhedron, triangle, shade_index=symbol_index)
