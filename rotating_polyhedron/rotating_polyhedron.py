@@ -2,64 +2,58 @@ import numpy as np
 import math
 import time
 import sys
+import trimesh
 
 
-class ShapeRegistry:
-    shape_registry = {}
+class LoadPolyhedron:
+    def load_polyhedron_file(self, filepath, lower, higher):
+        mesh = trimesh.load(filepath, force='mesh')
+        init_vertices = np.array([np.array(lst) for lst in mesh.vertices])
+        polys = mesh.faces
+        init_normals = np.array([np.array(lst) for lst in mesh.vertex_normals])
 
-    @classmethod
-    def register(cls, shape):
-        def wrapper(func):
-            cls.shape_registry[shape] = func
-            return func
-        return wrapper
+        vertices, inverse_indices_vertices = np.unique(init_vertices, axis=0, return_inverse=True)
+        vertices_lookup = dict(enumerate(inverse_indices_vertices))
 
-    @classmethod
-    def get(cls, shape):
-        if shape not in cls.shape_registry:
-            raise NotImplementedError(f"The shape {shape} is not supported.")
-        return cls.shape_registry[shape]
+        normals, inverse_indices_normals = np.unique(init_normals, axis=0, return_inverse=True)
+        normals_lookup = dict(enumerate(inverse_indices_normals))
 
+        
+        # normalize vertices ∈ [lower, higher]
+        vertices = np.vstack(vertices)
+        min_vals = vertices.min(axis=0)
+        max_vals = vertices.max(axis=0)
+        vertices = (vertices - min_vals) / (max_vals - min_vals) * (higher - lower) + lower
+        
+        faces = []
+        edges = []
+        for face in polys:
+            # find triangles
+            faces.extend(self._triangulate_convex_polygon(face))
+            # find edges
+            for i in range(len(face)):
+                edges.append((face[i], face[(i + 1) % len(face)]))
+        faces = np.array(faces)
+        edges = np.array(edges)
 
-# generates corner points for a cube
-@ShapeRegistry.register("cube")
-def generate_cube_corners(higher, lower):
-    vertices = np.array([
-            [higher, higher, higher],
-            [higher, higher, lower],
-            [higher, lower, higher],
-            [higher, lower, lower],
-            [lower, higher, higher],
-            [lower, higher, lower],
-            [lower, lower, higher],
-            [lower, lower, lower]])
-    faces = np.array([[0, 4, 6, 2], [2, 6, 7, 3], [4, 5, 7, 6], [1, 3, 7, 5], [0, 1, 5, 4], [0, 2, 3, 1]])
-    edges = np.array([[0, 1], [0, 2], [0, 4],
-                [3, 1], [3, 2], [3, 7],
-                [5, 1], [5, 4], [5, 7],
-                [6, 2], [6, 4], [6, 7]])
-    return vertices, faces, edges
+        return vertices, normals, vertices_lookup, normals_lookup, faces, edges
 
 
-# generates corner points for an octahedron
-@ShapeRegistry.register("octahedron")
-def generate_octahedron_corners(higher, lower):
-    vertices = np.array([
-            [(higher + lower) // 2, higher, higher],
-            [(higher + lower) // 2, higher, lower],
-            [(higher + lower) // 2, lower, higher],
-            [(higher + lower) // 2, lower, lower],
-            [higher, (higher + lower) // 2, (higher + lower) // 2],
-            [lower, (higher + lower) // 2, (higher + lower) // 2]])
-    faces = np.array([[0, 2, 4], [2, 5, 3], [2, 3, 4], [0, 5, 2], [1, 3, 5], [0, 4, 1], [0, 1, 5], [1, 4, 3]])
-    edges = np.array([[0, 1], [0, 2], [3, 1], [3, 2],
-                [4, 0],  [4, 1], [4, 2], [4, 3],
-                [5, 0],  [5, 1], [5, 2], [5, 3]])
-    return vertices, faces, edges
+     # fan triangulation of a convex polygon
+    def _triangulate_convex_polygon(self, face):
+
+        triangles = []
+        n = len(face)
+        if n < 3:
+            raise ValueError("Polygon has less than 3 vertices.")
+        for i in range(1, n - 1):
+            # pivot is vertex with index 0
+            triangles.append((face[0], face[i], face[i + 1]))
+        return triangles
 
 
 class Polyhedron:
-    def __init__(self, shape='cube', side_length=29, aspect_ratio=1.67, draw_faces=False):
+    def __init__(self, filepath='cube.obj', max_height=29, aspect_ratio=1.67, draw_faces=False):
         self.__camera_vector = np.array([0, 0, -1])
 
         self.__lookup_symbols = np.array([' ', ':', ';', '!', '-', '~', '+', '<', '?', '/', '|', '*', 'O', '$', '%', '#', '@'])
@@ -68,41 +62,38 @@ class Polyhedron:
         self.__aspect_ratio = aspect_ratio
         self.__aspect_ratio_transformation_matrix = np.array([[self.__aspect_ratio, 0, 0], [0, 1, 0], [0, 0, 1]])
 
-        self.__shape_registry = ShapeRegistry()
-        self.__shape = shape
-        self.__side_length = side_length
-        self.__polyhedron, self.__render, self.__faces, self.__edges = self._generate_polyhedron_and_render()
+        self.__filepath = filepath
+        self.__max_height = max_height
+        self.__polyhedron, self.__normals, self.__polyhedron_lookup, self.__normals_lookup, self.__render_buffer, self.__depth_buffer, self.__faces, self.__edges = self._generate_polyhedron_and_render()
+        
         self.__c = np.mean(self.__polyhedron, axis=0)
         self.__polyhedron_offset = self.__polyhedron - self.__c
 
         if draw_faces: 
             self.__draw_method = self._render_polyhedron_faces
-            self.__triangles = {}
-            for face_index, face in enumerate(self.__faces):
-                self.__triangles[face_index] = self._triangulate_convex_polygon(face)
         else:
+            
+            edge_indices = np.array([[self.__polyhedron_lookup[a], self.__polyhedron_lookup[b]] for a, b in self.__edges])
+
+            # Get the corresponding vertex positions
+            v_start = self.__polyhedron[edge_indices[:, 0]]  
+            v_end = self.__polyhedron[edge_indices[:, 1]]    
+
+            # Compute edge vectors and their lengths
+            edge_vectors = v_end - v_start
+            edge_lengths = np.linalg.norm(edge_vectors, axis=1)
+
+            # Maximum edge length
+            side_length = edge_lengths.max()
+
             self.__draw_method = self._render_polyhedron_edges
             self.__density_lookup = {}
             self.__num_sections = 64
             for i in range(self.__num_sections):
                 angle = i / (self.__num_sections - 1)
                 density_modifier = 1 + (self.__aspect_ratio - 1) * angle
-                density = np.linspace(0, 1, num=int(self.__side_length * density_modifier)).reshape(-1, 1)
+                density = np.linspace(0, 1, num=int(side_length * density_modifier)).reshape(-1, 1)
                 self.__density_lookup[i] = density
-
-
-
-    # fan triangulation of a convex polygon
-    def _triangulate_convex_polygon(self, face):
-        # triangulation of convex polygon
-        # we choose a pivot and then use fan triangulation
-        triangles = []
-        n = len(face)
-        if n < 3:
-            raise ValueError("Polygon has less than 3 vertices.")
-        for i in range(1, n - 1):
-            triangles.append((face[0], face[i], face[i + 1]))
-        return triangles
 
 
     # generates the rotation matrix for the x element of theta
@@ -130,7 +121,7 @@ class Polyhedron:
 
 
     # calculates a full rotation matrix for a 3 dimensional rotation
-    def __multi_dim_rotation(self, theta_xyz):
+    def _multi_dim_rotation(self, theta_xyz):
         rotation_matrix = self._x_rotation(theta_xyz[0])
         if theta_xyz[1] != 0:
             rotation_matrix = rotation_matrix @ self._y_rotation(theta_xyz[1])
@@ -141,27 +132,29 @@ class Polyhedron:
 
     # generates a general polyhedron and instantiates the render matrix
     def _generate_polyhedron_and_render(self):
-        render_dim = (math.ceil(self.__side_length * np.sqrt(3)), math.ceil(self.__side_length * np.sqrt(3)))
-        dist_to_center = self.__side_length // 2
+        render_dim = (math.ceil(self.__max_height * np.sqrt(3)), math.ceil(self.__max_height * np.sqrt(3)))
+        dist_to_center = self.__max_height // 2
         lower = render_dim[0] // 2 - dist_to_center
         higher = render_dim[0] // 2 + dist_to_center
         
         # generate the polyhedron
-        polyhedron, faces, edges = self.__shape_registry.get(self.__shape)(higher, lower)
+        load_polyhedron = LoadPolyhedron()
+        polyhedron, normals, polyhedron_lookup, normals_lookup, faces, edges = load_polyhedron.load_polyhedron_file(filepath=self.__filepath, lower=lower, higher=higher)
 
         # instantiate the render matrix
-        render = np.zeros((render_dim[0], math.ceil(render_dim[1] * self.__aspect_ratio)), dtype=int)
+        render_buffer = np.zeros((render_dim[0], math.ceil(render_dim[1] * self.__aspect_ratio)), dtype=int)
+        depth_buffer = render_buffer.copy()
 
-        return polyhedron, render, faces, edges
+        return polyhedron, normals, polyhedron_lookup, normals_lookup, render_buffer, depth_buffer, faces, edges
 
 
     # renders the polyhedron as a wire frame
-    def _render_polyhedron_edges(self, polyhedron):
+    def _render_polyhedron_edges(self, polyhedron, **kwargs):
         # iterate over the edges of the polyhedron
         for endpoint_0, endpoint_1 in self.__edges:
             # we calculate a new density modifier for the lines so that vertical lines have less density and horizontal lines have more density because of the aspect ratio of monospace font
-            dx = np.abs(polyhedron[endpoint_1][0] - polyhedron[endpoint_0][0])
-            dy = np.abs(polyhedron[endpoint_1][1] - polyhedron[endpoint_0][1])
+            dx = np.abs(polyhedron[self.__polyhedron_lookup[endpoint_1]][0] - polyhedron[self.__polyhedron_lookup[endpoint_0]][0])
+            dy = np.abs(polyhedron[self.__polyhedron_lookup[endpoint_1]][1] - polyhedron[self.__polyhedron_lookup[endpoint_0]][1])
             angle = 2 * np.abs(np.arctan2(dy, dx)) / np.pi
             inverted_angle = 1 - angle
             angle_section_index = np.clip(np.round(inverted_angle * self.__num_sections).astype(int), 0, self.__num_sections - 1)
@@ -169,67 +162,77 @@ class Polyhedron:
             density = self.__density_lookup[angle_section_index]
 
             # calculate points on the edge based on the calculated density
-            points = np.round(polyhedron[endpoint_0] + density * (polyhedron[endpoint_1] - polyhedron[endpoint_0])).astype(int)
+            points = np.round(polyhedron[self.__polyhedron_lookup[endpoint_0]] + density * (polyhedron[self.__polyhedron_lookup[endpoint_1]] - polyhedron[self.__polyhedron_lookup[endpoint_0]])).astype(int)
             # draw the indexes of the symbols in the render matrix
-            self.__render[np.clip(points[:, 1], 0, self.__render.shape[0] - 1), np.clip(points[:, 0], 0, self.__render.shape[1] - 1)] = self.__lookup_black
+            self.__render_buffer[np.clip(points[:, 1], 0, self.__render_buffer.shape[0] - 1), np.clip(points[:, 0], 0, self.__render_buffer.shape[1] - 1)] = self.__lookup_black
 
 
     # rendering the triangle
-    def _fill_triangle(self, polyhedron, triangle, shade_index):
-        # bounding box for triangle
-        p0 = polyhedron[triangle[0]]
-        p1 = polyhedron[triangle[1]]
-        p2 = polyhedron[triangle[2]]
-        min_x = int(max(min(p0[0], p1[0], p2[0]), 0))
-        max_x = int(min(max(p0[0], p1[0], p2[0]), self.__render.shape[1] - 1))
-        min_y = int(max(min(p0[1], p1[1], p2[1]), 0))
-        max_y = int(min(max(p0[1], p1[1], p2[1]), self.__render.shape[0] - 1))
-
-        # generate a mesh grid
-        xs, ys = np.meshgrid(np.arange(min_x, max_x + 1), np.arange(min_y, max_y + 1))
-        points = np.stack((xs, ys), axis=-1)
-        
+    def _fill_triangle(self, polyhedron, normals, triangle):
         # for calculating which side of the line points are on
         def edge(a, b, p):
             return (p[..., 0] - a[0]) * (b[1] - a[1]) - (p[..., 1] - a[1]) * (b[0] - a[0])
 
-        w0 = edge(p1, p2, points)
-        w1 = edge(p2, p0, points)
-        w2 = edge(p0, p1, points)
+        # bounding box for triangle
+        p0 = polyhedron[self.__polyhedron_lookup[triangle[0]]]
+        p1 = polyhedron[self.__polyhedron_lookup[triangle[1]]]
+        p2 = polyhedron[self.__polyhedron_lookup[triangle[2]]]
+        min_x = int(max(min(p0[0], p1[0], p2[0]), 0))
+        max_x = int(min(max(p0[0], p1[0], p2[0]), self.__render_buffer.shape[1] - 1))
+        min_y = int(max(min(p0[1], p1[1], p2[1]), 0))
+        max_y = int(min(max(p0[1], p1[1], p2[1]), self.__render_buffer.shape[0] - 1))
+
+        # normals
+        n0 = normals[self.__normals_lookup[triangle[0]]]
+        n1 = normals[self.__normals_lookup[triangle[1]]]
+        n2 = normals[self.__normals_lookup[triangle[2]]]
+
+        area = edge(p0, p1, p2)
+        if area == 0:
+            return
+
+        # generate a mesh grid
+        xs, ys = np.meshgrid(np.arange(min_x, max_x + 1), np.arange(min_y, max_y + 1))
+        points = np.stack((xs, ys), axis=-1)
+
+        w0 = edge(p1, p2, points) / area
+        w1 = edge(p2, p0, points) / area
+        w2 = edge(p0, p1, points) / area
 
         # fill in only the points that are inside the triangle we are rendering
-        inside = ((w0 >= 0) & (w1 >= 0) & (w2 >= 0)) | ((w0 <= 0) & (w1 <= 0) & (w2 <= 0))
+        inside = ((w0 >= 0) & (w1 >= 0) & (w2 >= 0))
         ys, xs = np.where(inside)
-        self.__render[min_y + ys, min_x + xs] = shade_index
+
+        for dy, dx, alpha, beta, gamma in zip(ys, xs, w0[inside], w1[inside], w2[inside]):
+            interpolated_normal = alpha * n0 + beta * n1 + gamma * n2
+            interpolated_normal /= np.linalg.norm(interpolated_normal)
+            interpolated_z = alpha * p0[2] + beta * p1[2] + gamma * p2[2]
+            
+            y_index = min_y + dy
+            x_index = min_x + dx
+            if self.__depth_buffer[y_index, x_index] < interpolated_z:
+                shade_index = np.clip(a=int(len(self.__lookup_symbols) * -np.dot(interpolated_normal, self.__camera_vector)), a_min=1, a_max=len(self.__lookup_symbols) - 1)
+                self.__render_buffer[y_index, x_index] = shade_index
+                self.__depth_buffer[y_index, x_index] = interpolated_z
 
 
     # render the polyhedron faces with shading
-    def _render_polyhedron_faces(self, polyhedron):
-        for face_index, face in enumerate(self.__faces):
-            # we only need 3 points to calculate the normal vector and they should be indexed in counter clockwise orientation
-            p1 = polyhedron[face[0]]
-            p2 = polyhedron[face[1]]
-            p3 = polyhedron[face[2]]
-            # calculate the normal vector and normalize it
-            v1 = p2 - p1
-            v2 = p3 - p1
-            normal_vector = np.cross(v1, v2)
-            normalized_normal_vector = normal_vector / np.linalg.norm(normal_vector)
+    def _render_polyhedron_faces(self, polyhedron, normals, **kwargs):
+        for index, face in enumerate(self.__faces):
+            normal_vector = np.mean([normals[self.__normals_lookup[face[0]]], normals[self.__normals_lookup[face[1]]], normals[self.__normals_lookup[face[2]]]], axis=0)
 
             # check if the face is facing away
-            dot_product = np.dot(normalized_normal_vector, self.__camera_vector)
+            dot_product = np.dot(normal_vector, self.__camera_vector)
             if dot_product < 0:
-                # calculate shading for a face
-                symbol_index = np.clip(a=int((len(self.__lookup_symbols)) * -dot_product), a_min=1, a_max=len(self.__lookup_symbols) - 1)
                 # fill in the render matrix
-                for triangle in self.__triangles[face_index]:
-                    self._fill_triangle(polyhedron, triangle, shade_index=symbol_index)
+                self._fill_triangle(polyhedron, normals, face)
 
 
-    def _print_render(self, polyhedron):
-        self.__draw_method(polyhedron)
-        char_matrix = self.__lookup_symbols[self.__render]
-        self.__render.fill(0)
+    def _print_render(self, polyhedron, normals):
+        self.__draw_method(polyhedron=polyhedron, normals=normals)
+        char_matrix = self.__lookup_symbols[self.__render_buffer]
+        self.__render_buffer.fill(0)
+        self.__depth_buffer.fill(0)
 
         # Move cursor to top-left using ANSI escape code
         output = '\033[H\033[2J\033[3J' + '\n'.join(''.join(row) for row in char_matrix) + '\n' # move cursor to overwrite screen and create string representation
@@ -244,13 +247,15 @@ class Polyhedron:
             # update theta
             total_theta = (total_theta + theta) % (2 * np.pi)
             # calculate the new rotation matrix
-            rotation_matrix = self.__multi_dim_rotation(total_theta)
+            rotation_matrix = self._multi_dim_rotation(total_theta)
             # rotate the cube
             temp_polyhedron = self.__polyhedron_offset @ rotation_matrix + self.__c
             temp_polyhedron = temp_polyhedron @ self.__aspect_ratio_transformation_matrix
+            # rotate normals
+            temp_normals = self.__normals @ rotation_matrix
             # calculate the render matrix based on the rotated cube and display it
-            self._print_render(polyhedron=temp_polyhedron)
-            # sleep
+            self._print_render(polyhedron=temp_polyhedron, normals=temp_normals)
+
             time.sleep(0.01)
 
 
@@ -258,16 +263,16 @@ if __name__ == '__main__':
     n = len(sys.argv)
     try:
         # interpret the user input
-        side_length = int(sys.argv[1])
+        max_height = int(sys.argv[1])
         theta = np.array([float(sys.argv[2]), float(sys.argv[3]), float(sys.argv[4])])
-        shape = str(sys.argv[5])
+        filepath = str(sys.argv[5])
         draw_faces = bool(int(sys.argv[6]))
     except:
         # no or incorrect user input was provided, so we use standard
-        side_length = 29
+        max_height = 29
         theta = np.array([0.02, 0.002, 0.001])
-        shape = 'octahedron'
+        filepath = 'octahedron.obj'
         draw_faces = 1
     
-    poly = Polyhedron(shape=shape, side_length=side_length, draw_faces=draw_faces)
+    poly = Polyhedron(filepath=filepath, max_height=max_height, draw_faces=draw_faces)
     poly.consistently_rotate_polyhedron(theta)
