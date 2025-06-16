@@ -56,7 +56,7 @@ class Polyhedron:
     def __init__(self, filepath='cube.obj', max_height=29, aspect_ratio=1.67, draw_faces=False):
         self.__camera_vector = np.array([0, 0, -1])
 
-        self.__lookup_symbols = np.array([' ', ':', ';', '!', '-', '~', '+', '<', '?', '/', '|', '*', 'O', '$', '%', '#', '@'])
+        self.__lookup_symbols = np.array([' ', '-', '~', ':', ';', '!', '+', '<', '?', '/', '|', '*', 'O', '$', '%', '#', '@'])
         self.__lookup_black = len(self.__lookup_symbols) - 1
 
         self.__aspect_ratio = aspect_ratio
@@ -235,7 +235,7 @@ class Polyhedron:
         self.__depth_buffer.fill(0)
 
         # Move cursor to top-left using ANSI escape code
-        output = '\033[H\033[2J\033[3J' + '\n'.join(''.join(row) for row in char_matrix) + '\n' # move cursor to overwrite screen and create string representation
+        output = '\033[H\033[2J\033[3J' + '\n'.join(''.join(row).rstrip() for row in char_matrix) + '\n' # move cursor to overwrite screen and create string representation
         sys.stdout.write(output)
         sys.stdout.flush()
 
@@ -263,16 +263,16 @@ if __name__ == '__main__':
     n = len(sys.argv)
     try:
         # interpret the user input
-        max_height = int(sys.argv[1])
-        theta = np.array([float(sys.argv[2]), float(sys.argv[3]), float(sys.argv[4])])
-        filepath = str(sys.argv[5])
-        draw_faces = bool(int(sys.argv[6]))
+        draw_faces = bool(int(sys.argv[1]))
+        max_height = int(sys.argv[2])
+        theta = np.array([float(sys.argv[3]), float(sys.argv[4]), float(sys.argv[5])])
+        filepath = str(sys.argv[6])
     except:
         # no or incorrect user input was provided, so we use standard
         max_height = 29
         theta = np.array([0.02, 0.002, 0.001])
-        filepath = 'octahedron.obj'
+        filepath = 'cube.obj'
         draw_faces = 1
-    
+
     poly = Polyhedron(filepath=filepath, max_height=max_height, draw_faces=draw_faces)
     poly.consistently_rotate_polyhedron(theta)
