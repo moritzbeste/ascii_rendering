@@ -19,11 +19,17 @@ class LoadPolyhedron:
         normals_lookup = dict(enumerate(inverse_indices_normals))
 
         
-        # normalize vertices ∈ [lower, higher]
         vertices = np.vstack(vertices)
+
+        # Compute center and overall scale
         min_vals = vertices.min(axis=0)
         max_vals = vertices.max(axis=0)
-        vertices = (vertices - min_vals) / (max_vals - min_vals) * (higher - lower) + lower
+        center = (min_vals + max_vals) / 2
+        scale = (max_vals - min_vals).max()  # Uniform scale
+
+        # Map to [lower, higher] preserving proportions
+        normalized_size = higher - lower
+        vertices = (vertices - center) / scale * normalized_size + (lower + higher) / 2
         
         faces = []
         edges = []
@@ -271,7 +277,7 @@ if __name__ == '__main__':
         # no or incorrect user input was provided, so we use standard
         max_height = 29
         theta = np.array([0.02, 0.002, 0.001])
-        filepath = 'cube.obj'
+        filepath = 'toroidal_polyhedron.obj'
         draw_faces = 1
 
     poly = Polyhedron(filepath=filepath, max_height=max_height, draw_faces=draw_faces)
