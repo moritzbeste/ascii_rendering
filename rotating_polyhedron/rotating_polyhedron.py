@@ -2,8 +2,9 @@ import numpy as np
 import math
 import time
 import sys
+import threading
+import queue
 import trimesh
-
 
 class LoadPolyhedron:
     def load_polyhedron_file(self, filepath, lower, higher):
@@ -44,8 +45,8 @@ class LoadPolyhedron:
 
         return vertices, normals, vertices_lookup, normals_lookup, faces, edges
 
-
-     # fan triangulation of a convex polygon
+    
+    # fan triangulation of a convex polygon
     def _triangulate_convex_polygon(self, face):
 
         triangles = []
@@ -60,6 +61,7 @@ class LoadPolyhedron:
 
 class Polyhedron:
     def __init__(self, filepath='cube.obj', max_height=29, aspect_ratio=1.67, draw_faces=False):
+        self.__draw_faces = draw_faces
         self.__camera_vector = np.array([0, 0, -1])
 
         self.__lookup_symbols = np.array([' ', '-', '~', ':', ';', '!', '+', '<', '?', '/', '|', '*', 'O', '$', '%', '#', '@'])
@@ -70,13 +72,21 @@ class Polyhedron:
 
         self.__filepath = filepath
         self.__max_height = max_height
-        self.__polyhedron, self.__normals, self.__polyhedron_lookup, self.__normals_lookup, self.__render_buffer, self.__depth_buffer, self.__faces, self.__edges = self._generate_polyhedron_and_render()
+        self.__polyhedron, self.__normals, self.__polyhedron_lookup, self.__normals_lookup, self.__render_buffer, self.__depth_buffer, self.__buffer_pixel_lock, self.__faces, self.__edges = self._generate_polyhedron_and_render()
         
         self.__c = np.mean(self.__polyhedron, axis=0)
         self.__polyhedron_offset = self.__polyhedron - self.__c
 
+        self.__thread_pool = []
+
         if draw_faces: 
             self.__draw_method = self._render_polyhedron_faces
+
+            self.__task_queue = queue.Queue()
+            self.__shutdown_flag = threading.Event()
+            for i in range(16):
+                self._add_thread()
+
         else:
             
             edge_indices = np.array([[self.__polyhedron_lookup[a], self.__polyhedron_lookup[b]] for a, b in self.__edges])
@@ -100,6 +110,12 @@ class Polyhedron:
                 density_modifier = 1 + (self.__aspect_ratio - 1) * angle
                 density = np.linspace(0, 1, num=int(side_length * density_modifier)).reshape(-1, 1)
                 self.__density_lookup[i] = density
+
+
+    def _add_thread(self):
+        t = threading.Thread(target=self.__worker_loop, daemon=True)
+        t.start()
+        self.__thread_pool.append(t)
 
 
     # generates the rotation matrix for the x element of theta
@@ -142,25 +158,30 @@ class Polyhedron:
         dist_to_center = self.__max_height // 2
         lower = render_dim[0] // 2 - dist_to_center
         higher = render_dim[0] // 2 + dist_to_center
-        
         # generate the polyhedron
-        load_polyhedron = LoadPolyhedron()
-        polyhedron, normals, polyhedron_lookup, normals_lookup, faces, edges = load_polyhedron.load_polyhedron_file(filepath=self.__filepath, lower=lower, higher=higher)
+        load = LoadPolyhedron()
+        polyhedron, normals, polyhedron_lookup, normals_lookup, faces, edges = load.load_polyhedron_file(filepath=self.__filepath, lower=lower, higher=higher)
 
         # instantiate the render matrix
-        render_buffer = np.zeros((render_dim[0], math.ceil(render_dim[1] * self.__aspect_ratio)), dtype=int)
+        width = math.ceil(render_dim[0] * self.__aspect_ratio)
+        height = render_dim[1]
+        render_buffer = np.zeros((height, width), dtype=int)
         depth_buffer = render_buffer.copy()
 
-        return polyhedron, normals, polyhedron_lookup, normals_lookup, render_buffer, depth_buffer, faces, edges
+        # instantiate lock for pixels
+        buffer_pixel_lock = np.array([[threading.Lock() for _ in range(width)] for _ in range(height)])
+
+        return polyhedron, normals, polyhedron_lookup, normals_lookup, render_buffer, depth_buffer, buffer_pixel_lock, faces, edges
 
 
     # renders the polyhedron as a wire frame
-    def _render_polyhedron_edges(self, polyhedron, **kwargs):
+    # ONLY SAFE FOR SINGLE THREADED RENDERING
+    def _render_polyhedron_edges(self):
         # iterate over the edges of the polyhedron
         for endpoint_0, endpoint_1 in self.__edges:
             # we calculate a new density modifier for the lines so that vertical lines have less density and horizontal lines have more density because of the aspect ratio of monospace font
-            dx = np.abs(polyhedron[self.__polyhedron_lookup[endpoint_1]][0] - polyhedron[self.__polyhedron_lookup[endpoint_0]][0])
-            dy = np.abs(polyhedron[self.__polyhedron_lookup[endpoint_1]][1] - polyhedron[self.__polyhedron_lookup[endpoint_0]][1])
+            dx = np.abs(self.__temp_polyhedron[self.__polyhedron_lookup[endpoint_1]][0] - self.__temp_polyhedron[self.__polyhedron_lookup[endpoint_0]][0])
+            dy = np.abs(self.__temp_polyhedron[self.__polyhedron_lookup[endpoint_1]][1] - self.__temp_polyhedron[self.__polyhedron_lookup[endpoint_0]][1])
             angle = 2 * np.abs(np.arctan2(dy, dx)) / np.pi
             inverted_angle = 1 - angle
             angle_section_index = np.clip(np.round(inverted_angle * self.__num_sections).astype(int), 0, self.__num_sections - 1)
@@ -168,30 +189,42 @@ class Polyhedron:
             density = self.__density_lookup[angle_section_index]
 
             # calculate points on the edge based on the calculated density
-            points = np.round(polyhedron[self.__polyhedron_lookup[endpoint_0]] + density * (polyhedron[self.__polyhedron_lookup[endpoint_1]] - polyhedron[self.__polyhedron_lookup[endpoint_0]])).astype(int)
+            points = np.round(self.__temp_polyhedron[self.__polyhedron_lookup[endpoint_0]] + density * (self.__temp_polyhedron[self.__polyhedron_lookup[endpoint_1]] - self.__temp_polyhedron[self.__polyhedron_lookup[endpoint_0]])).astype(int)
             # draw the indexes of the symbols in the render matrix
             self.__render_buffer[np.clip(points[:, 1], 0, self.__render_buffer.shape[0] - 1), np.clip(points[:, 0], 0, self.__render_buffer.shape[1] - 1)] = self.__lookup_black
 
 
+    def __worker_loop(self):
+            while not self.__shutdown_flag.is_set():
+                try:
+                    triangle = self.__task_queue.get(timeout=0.1)
+                    try:
+                        self._fill_triangle(triangle)
+                    finally:
+                        self.__task_queue.task_done()
+                except queue.Empty:
+                    continue
+
+
     # rendering the triangle
-    def _fill_triangle(self, polyhedron, normals, triangle):
+    def _fill_triangle(self, triangle):
         # for calculating which side of the line points are on
         def edge(a, b, p):
             return (p[..., 0] - a[0]) * (b[1] - a[1]) - (p[..., 1] - a[1]) * (b[0] - a[0])
 
         # bounding box for triangle
-        p0 = polyhedron[self.__polyhedron_lookup[triangle[0]]]
-        p1 = polyhedron[self.__polyhedron_lookup[triangle[1]]]
-        p2 = polyhedron[self.__polyhedron_lookup[triangle[2]]]
+        p0 = self.__temp_polyhedron[self.__polyhedron_lookup[triangle[0]]]
+        p1 = self.__temp_polyhedron[self.__polyhedron_lookup[triangle[1]]]
+        p2 = self.__temp_polyhedron[self.__polyhedron_lookup[triangle[2]]]
         min_x = int(max(min(p0[0], p1[0], p2[0]), 0))
         max_x = int(min(max(p0[0], p1[0], p2[0]), self.__render_buffer.shape[1] - 1))
         min_y = int(max(min(p0[1], p1[1], p2[1]), 0))
         max_y = int(min(max(p0[1], p1[1], p2[1]), self.__render_buffer.shape[0] - 1))
 
         # normals
-        n0 = normals[self.__normals_lookup[triangle[0]]]
-        n1 = normals[self.__normals_lookup[triangle[1]]]
-        n2 = normals[self.__normals_lookup[triangle[2]]]
+        n0 = self.__temp_normals[self.__normals_lookup[triangle[0]]]
+        n1 = self.__temp_normals[self.__normals_lookup[triangle[1]]]
+        n2 = self.__temp_normals[self.__normals_lookup[triangle[2]]]
 
         area = edge(p0, p1, p2)
         if area == 0:
@@ -218,24 +251,32 @@ class Polyhedron:
             x_index = min_x + dx
             if self.__depth_buffer[y_index, x_index] < interpolated_z:
                 shade_index = np.clip(a=int(len(self.__lookup_symbols) * -np.dot(interpolated_normal, self.__camera_vector)), a_min=1, a_max=len(self.__lookup_symbols) - 1)
-                self.__render_buffer[y_index, x_index] = shade_index
-                self.__depth_buffer[y_index, x_index] = interpolated_z
+                lock = self.__buffer_pixel_lock[y_index, x_index]
+                with lock:
+                    self.__render_buffer[y_index, x_index] = shade_index
+                    self.__depth_buffer[y_index, x_index] = interpolated_z
 
 
     # render the polyhedron faces with shading
-    def _render_polyhedron_faces(self, polyhedron, normals, **kwargs):
+    def _render_polyhedron_faces(self):
         for index, face in enumerate(self.__faces):
-            normal_vector = np.mean([normals[self.__normals_lookup[face[0]]], normals[self.__normals_lookup[face[1]]], normals[self.__normals_lookup[face[2]]]], axis=0)
+            normal_vector = np.mean([self.__temp_normals[self.__normals_lookup[face[0]]], self.__temp_normals[self.__normals_lookup[face[1]]], self.__temp_normals[self.__normals_lookup[face[2]]]], axis=0)
 
             # check if the face is facing away
             dot_product = np.dot(normal_vector, self.__camera_vector)
             if dot_product < 0:
                 # fill in the render matrix
-                self._fill_triangle(polyhedron, normals, face)
+                self.__task_queue.put(face)
 
 
-    def _print_render(self, polyhedron, normals):
-        self.__draw_method(polyhedron=polyhedron, normals=normals)
+    def _print_render(self):
+        self.__draw_method()
+
+        # wait for all threads to finish
+        if self.__draw_faces:
+            self.__task_queue.join()
+
+
         char_matrix = self.__lookup_symbols[self.__render_buffer]
         self.__render_buffer.fill(0)
         self.__depth_buffer.fill(0)
@@ -249,20 +290,31 @@ class Polyhedron:
     # game loop
     def consistently_rotate_polyhedron(self, theta=np.array([0.1, 0.01, 0.05])):
         total_theta = np.array([0.0, 0.0, 0.0])
-        while(True):
-            # update theta
-            total_theta = (total_theta + theta) % (2 * np.pi)
-            # calculate the new rotation matrix
-            rotation_matrix = self._multi_dim_rotation(total_theta)
-            # rotate the cube
-            temp_polyhedron = self.__polyhedron_offset @ rotation_matrix + self.__c
-            temp_polyhedron = temp_polyhedron @ self.__aspect_ratio_transformation_matrix
-            # rotate normals
-            temp_normals = self.__normals @ rotation_matrix
-            # calculate the render matrix based on the rotated cube and display it
-            self._print_render(polyhedron=temp_polyhedron, normals=temp_normals)
+        try:
+            while(True):
+                # update theta
+                total_theta = (total_theta + theta) % (2 * np.pi)
+                # calculate the new rotation matrix
+                rotation_matrix = self._multi_dim_rotation(total_theta)
+                # rotate the cube
+                self.__temp_polyhedron = self.__polyhedron_offset @ rotation_matrix + self.__c
+                self.__temp_polyhedron = self.__temp_polyhedron @ self.__aspect_ratio_transformation_matrix
+                # rotate normals
+                self.__temp_normals = self.__normals @ rotation_matrix
+                # calculate the render matrix based on the rotated cube and display it
+                self._print_render()
 
-            time.sleep(0.01)
+                time.sleep(0.01)
+        except KeyboardInterrupt:
+            print("Keyboard interrupt received.")
+        finally:
+            print("Shutting down...")
+            self.__shutdown_flag.set()
+            for t in self.__thread_pool:
+                t.join()
+            print("Gracefully shut down.")
+            if __name__ == "__main__":
+                sys.exit(0)
 
 
 if __name__ == '__main__':

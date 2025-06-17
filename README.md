@@ -6,8 +6,11 @@ Table of Contents
 1. ascii_art:
 This is a small project that converts an image to ascii characters based on the brightness of the corresponding pixel/pixels. The resulting string can be displayed on a PDF.
 To use this program, sunply provide the following command line arguments: (string) pagesize between A0 and A10,(string) image filepath, (string) output filepath, optinally (integer) fontsize.
+dependencies: this project uses PIL, reportlab.pdfgen, reportlab.lib, numpy, sys
 2. rotating_polyhedron:
 This is a small project that animates a rotating polyhedron in the command line. To use this program, simply provide the following command line arguments: (integer ∈ {0, 1}) 1 to draw faces, 0 to draw wireframe, (integer) maximum height of the polyhedron, (float) x rotation angle per frame in radians, (float) y rotation angle per frame in radians, (float) z rotation angle per frame in radians, (string) filepath to model
+dependencies: this project uses numpy, math, time, sys, threading, queue, trimesh
+note: when using the wire frame mode, the rendering is single threaded. the rendering for faces is multithreaded
 
 To use this project simply clone it and run the programs in the terminal using python. They will also run without command line arguments using predefined arguments. 
 
