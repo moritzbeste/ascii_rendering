@@ -19,9 +19,6 @@ class LoadPolyhedron:
         normals, inverse_indices_normals = np.unique(init_normals, axis=0, return_inverse=True)
         normals_lookup = dict(enumerate(inverse_indices_normals))
 
-        
-        vertices = np.vstack(vertices)
-
         # Compute center and overall scale
         min_vals = vertices.min(axis=0)
         max_vals = vertices.max(axis=0)
