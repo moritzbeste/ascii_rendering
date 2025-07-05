@@ -80,13 +80,17 @@ class Polyhedron:
 
         self.__task_queue = queue.Queue()
         self.__shutdown_flag = threading.Event()
+        self.__num_threads = max(16, len(self.__faces) if draw_faces else len(self.__edges))
+        self.__thread_buffers_depth = [np.zeros_like(self.__render_buffer) for _ in range(self.__num_threads)]
+        self.__thread_buffers_index = [np.zeros_like(self.__render_buffer) for _ in range(self.__num_threads)]
+
         if draw_faces:
-            for i in range(max(16, len(self.__faces))):
-                self._add_thread(f=self._worker_loop_faces)
+            for i in range(self.__num_threads):
+                self._add_thread_faces(index=i)
 
         else:
-            for i in range(max(16, len(self.__edges))):
-                self._add_thread(f=self._worker_loop_edges)
+            for i in range(self.__num_threads):
+                self._add_thread_edges()
 
             edge_indices = np.array([[self.__polyhedron_lookup[a], self.__polyhedron_lookup[b]] for a, b in self.__edges])
 
@@ -111,8 +115,14 @@ class Polyhedron:
                 self.__density_lookup[i] = density
 
 
-    def _add_thread(self, f):
-        t = threading.Thread(target=f, daemon=True)
+    def _add_thread_edges(self):
+        t = threading.Thread(target=self._worker_loop_edges, daemon=True)
+        t.start()
+        self.__thread_pool.append(t)
+
+
+    def _add_thread_faces(self, index):
+        t = threading.Thread(target=self._worker_loop_faces, args=(self.__thread_buffers_index[index], self.__thread_buffers_depth[index]), daemon=True)
         t.start()
         self.__thread_pool.append(t)
 
@@ -198,12 +208,8 @@ class Polyhedron:
 
         # calculate points on the edge based on the calculated density
         points = np.round(self.__temp_polyhedron[self.__polyhedron_lookup[endpoint_0]] + density * (self.__temp_polyhedron[self.__polyhedron_lookup[endpoint_1]] - self.__temp_polyhedron[self.__polyhedron_lookup[endpoint_0]])).astype(int)
-        for point in points:
-            y_index = np.clip(point[1], 0, self.__render_buffer.shape[0] - 1)
-            x_index = np.clip(point[0], 0, self.__render_buffer.shape[1] - 1)
-            lock = self.__buffer_pixel_lock[y_index, x_index]
-            with lock:
-                self.__render_buffer[y_index, x_index] = self.__lookup_black
+        
+        self.__render_buffer[np.clip(points[:, 1], 0, self.__render_buffer.shape[0] - 1), np.clip(points[:, 0], 0, self.__render_buffer.shape[1] - 1)] = self.__lookup_black
 
 
     # renders the polyhedron as a wire frame
@@ -213,12 +219,12 @@ class Polyhedron:
             self.__task_queue.put(endpoints)
 
 
-    def _worker_loop_faces(self):
+    def _worker_loop_faces(self, buffer_index, buffer_depth):
         while not self.__shutdown_flag.is_set():
             try:
                 triangle = self.__task_queue.get(timeout=0.1)
                 try:
-                    self._fill_triangle(triangle)
+                    self._fill_triangle(triangle, buffer_index, buffer_depth)
                 finally:
                     self.__task_queue.task_done()
             except queue.Empty:
@@ -226,7 +232,7 @@ class Polyhedron:
 
 
     # rendering the triangle
-    def _fill_triangle(self, triangle):
+    def _fill_triangle(self, triangle, buffer_index, buffer_depth):
         # for calculating which side of the line points are on
         def edge(a, b, p):
             return (p[..., 0] - a[0]) * (b[1] - a[1]) - (p[..., 1] - a[1]) * (b[0] - a[0])
@@ -270,10 +276,8 @@ class Polyhedron:
             x_index = min_x + dx
             if self.__depth_buffer[y_index, x_index] < interpolated_z:
                 shade_index = np.clip(a=int(len(self.__lookup_symbols) * -np.dot(interpolated_normal, self.__camera_vector)), a_min=1, a_max=len(self.__lookup_symbols) - 1)
-                lock = self.__buffer_pixel_lock[y_index, x_index]
-                with lock:
-                    self.__render_buffer[y_index, x_index] = shade_index
-                    self.__depth_buffer[y_index, x_index] = interpolated_z
+                buffer_index[y_index, x_index] = shade_index
+                buffer_depth[y_index, x_index] = interpolated_z
 
 
     # render the polyhedron faces with shading
@@ -294,6 +298,17 @@ class Polyhedron:
         # wait for all threads to finish
         self.__task_queue.join()
 
+        if self.__draw_faces:
+            for i in range(self.__num_threads):
+                thread_index = self.__thread_buffers_index[i]
+                thread_depth = self.__thread_buffers_depth[i]
+
+                mask = thread_depth > self.__depth_buffer
+                self.__depth_buffer[mask] = thread_depth[mask]
+                self.__render_buffer[mask] = thread_index[mask]
+
+                self.__thread_buffers_index[i].fill(0)
+                self.__thread_buffers_depth[i].fill(0)
 
         char_matrix = self.__lookup_symbols[self.__render_buffer]
         self.__render_buffer.fill(0)
