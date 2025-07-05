@@ -76,16 +76,18 @@ class Polyhedron:
 
         self.__thread_pool = []
 
-        if draw_faces: 
-            self.__draw_method = self._render_polyhedron_faces
+        self.__draw_method = self._render_polyhedron_faces
 
-            self.__task_queue = queue.Queue()
-            self.__shutdown_flag = threading.Event()
-            for i in range(16):
-                self._add_thread()
+        self.__task_queue = queue.Queue()
+        self.__shutdown_flag = threading.Event()
+        if draw_faces:
+            for i in range(max(16, len(self.__faces))):
+                self._add_thread(f=self._worker_loop_faces)
 
         else:
-            
+            for i in range(max(16, len(self.__edges))):
+                self._add_thread(f=self._worker_loop_edges)
+
             edge_indices = np.array([[self.__polyhedron_lookup[a], self.__polyhedron_lookup[b]] for a, b in self.__edges])
 
             # Get the corresponding vertex positions
@@ -109,8 +111,8 @@ class Polyhedron:
                 self.__density_lookup[i] = density
 
 
-    def _add_thread(self):
-        t = threading.Thread(target=self.__worker_loop, daemon=True)
+    def _add_thread(self, f):
+        t = threading.Thread(target=f, daemon=True)
         t.start()
         self.__thread_pool.append(t)
 
@@ -171,36 +173,56 @@ class Polyhedron:
         return polyhedron, normals, polyhedron_lookup, normals_lookup, render_buffer, depth_buffer, buffer_pixel_lock, faces, edges
 
 
+    def _worker_loop_edges(self):
+        while not self.__shutdown_flag.is_set():
+            try:
+                endpoints = self.__task_queue.get(timeout=0.1)
+                try:
+                    self._draw_edges(endpoints)
+                finally:
+                    self.__task_queue.task_done()
+            except queue.Empty:
+                continue
+
+
+    def _draw_edges(self, endpoints):
+        endpoint_0, endpoint_1 = endpoints
+        # we calculate a new density modifier for the lines so that vertical lines have less density and horizontal lines have more density because of the aspect ratio of monospace font
+        dx = np.abs(self.__temp_polyhedron[self.__polyhedron_lookup[endpoint_1]][0] - self.__temp_polyhedron[self.__polyhedron_lookup[endpoint_0]][0])
+        dy = np.abs(self.__temp_polyhedron[self.__polyhedron_lookup[endpoint_1]][1] - self.__temp_polyhedron[self.__polyhedron_lookup[endpoint_0]][1])
+        angle = 2 * np.abs(np.arctan2(dy, dx)) / np.pi
+        inverted_angle = 1 - angle
+        angle_section_index = np.clip(np.round(inverted_angle * self.__num_sections).astype(int), 0, self.__num_sections - 1)
+        # lookup closest density in lookup table
+        density = self.__density_lookup[angle_section_index]
+
+        # calculate points on the edge based on the calculated density
+        points = np.round(self.__temp_polyhedron[self.__polyhedron_lookup[endpoint_0]] + density * (self.__temp_polyhedron[self.__polyhedron_lookup[endpoint_1]] - self.__temp_polyhedron[self.__polyhedron_lookup[endpoint_0]])).astype(int)
+        for point in points:
+            y_index = np.clip(point[1], 0, self.__render_buffer.shape[0] - 1)
+            x_index = np.clip(point[0], 0, self.__render_buffer.shape[1] - 1)
+            lock = self.__buffer_pixel_lock[y_index, x_index]
+            with lock:
+                self.__render_buffer[y_index, x_index] = self.__lookup_black
+
+
     # renders the polyhedron as a wire frame
-    # ONLY SAFE FOR SINGLE THREADED RENDERING
     def _render_polyhedron_edges(self):
         # iterate over the edges of the polyhedron
-        for endpoint_0, endpoint_1 in self.__edges:
-            # we calculate a new density modifier for the lines so that vertical lines have less density and horizontal lines have more density because of the aspect ratio of monospace font
-            dx = np.abs(self.__temp_polyhedron[self.__polyhedron_lookup[endpoint_1]][0] - self.__temp_polyhedron[self.__polyhedron_lookup[endpoint_0]][0])
-            dy = np.abs(self.__temp_polyhedron[self.__polyhedron_lookup[endpoint_1]][1] - self.__temp_polyhedron[self.__polyhedron_lookup[endpoint_0]][1])
-            angle = 2 * np.abs(np.arctan2(dy, dx)) / np.pi
-            inverted_angle = 1 - angle
-            angle_section_index = np.clip(np.round(inverted_angle * self.__num_sections).astype(int), 0, self.__num_sections - 1)
-            # lookup closest density in lookup table
-            density = self.__density_lookup[angle_section_index]
-
-            # calculate points on the edge based on the calculated density
-            points = np.round(self.__temp_polyhedron[self.__polyhedron_lookup[endpoint_0]] + density * (self.__temp_polyhedron[self.__polyhedron_lookup[endpoint_1]] - self.__temp_polyhedron[self.__polyhedron_lookup[endpoint_0]])).astype(int)
-            # draw the indexes of the symbols in the render matrix
-            self.__render_buffer[np.clip(points[:, 1], 0, self.__render_buffer.shape[0] - 1), np.clip(points[:, 0], 0, self.__render_buffer.shape[1] - 1)] = self.__lookup_black
+        for endpoints in self.__edges:
+            self.__task_queue.put(endpoints)
 
 
-    def __worker_loop(self):
-            while not self.__shutdown_flag.is_set():
+    def _worker_loop_faces(self):
+        while not self.__shutdown_flag.is_set():
+            try:
+                triangle = self.__task_queue.get(timeout=0.1)
                 try:
-                    triangle = self.__task_queue.get(timeout=0.1)
-                    try:
-                        self._fill_triangle(triangle)
-                    finally:
-                        self.__task_queue.task_done()
-                except queue.Empty:
-                    continue
+                    self._fill_triangle(triangle)
+                finally:
+                    self.__task_queue.task_done()
+            except queue.Empty:
+                continue
 
 
     # rendering the triangle
@@ -270,8 +292,7 @@ class Polyhedron:
         self.__draw_method()
 
         # wait for all threads to finish
-        if self.__draw_faces:
-            self.__task_queue.join()
+        self.__task_queue.join()
 
 
         char_matrix = self.__lookup_symbols[self.__render_buffer]
