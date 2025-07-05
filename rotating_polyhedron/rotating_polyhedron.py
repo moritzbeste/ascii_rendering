@@ -351,7 +351,6 @@ class Polyhedron:
 
 
 if __name__ == '__main__':
-    n = len(sys.argv)
     try:
         # interpret the user input
         draw_faces = bool(int(sys.argv[1]))
