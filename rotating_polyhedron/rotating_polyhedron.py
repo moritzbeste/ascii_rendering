@@ -80,7 +80,7 @@ class Polyhedron:
 
         self.__task_queue = queue.Queue()
         self.__shutdown_flag = threading.Event()
-        self.__num_threads = max(16, len(self.__faces) if draw_faces else len(self.__edges))
+        self.__num_threads = min(16, len(self.__faces) if draw_faces else len(self.__edges))
         self.__thread_buffers_depth = [np.zeros_like(self.__render_buffer) for _ in range(self.__num_threads)]
         self.__thread_buffers_index = [np.zeros_like(self.__render_buffer) for _ in range(self.__num_threads)]
 
