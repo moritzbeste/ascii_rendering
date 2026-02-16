@@ -7,16 +7,16 @@ import sys
 
 PAGESIZE_MAP = {
     "A0": pagesizes.A0,
-    "A1": pagesizes.A0,
-    "A2": pagesizes.A0,
-    "A3": pagesizes.A0,
-    "A4": pagesizes.A0,
-    "A5": pagesizes.A0,
-    "A6": pagesizes.A0,
-    "A7": pagesizes.A0,
-    "A8": pagesizes.A0,
-    "A9": pagesizes.A0,
-    "A10": pagesizes.A0,
+    "A1": pagesizes.A1,
+    "A2": pagesizes.A2,
+    "A3": pagesizes.A3,
+    "A4": pagesizes.A4,
+    "A5": pagesizes.A5,
+    "A6": pagesizes.A6,
+    "A7": pagesizes.A7,
+    "A8": pagesizes.A8,
+    "A9": pagesizes.A9,
+    "A10": pagesizes.A10
 }
 
 
@@ -27,9 +27,9 @@ def get_pagesize(arg):
     return PAGESIZE_MAP[key]
 
 
-def generate_ascii_art(filepath, max_width, max_height, rotate=True):
+def generate_ascii_art(filepath, max_width, max_height, rotate=True, invert=False):
     aspect_ratio = 0.6
-    punctuation = list("@$B%8WM#*oahkbdpqwmZO0QLCJUYXzcvunxrjft/\|()1{}[]?-_+~<>i!lI;:,\"^`'. ")
+    punctuation = list("@$B%8WM#*oahkbdpqwmZO0QLCJUYXzcvunxrjft/\\|()1{}[]?-_+~<>i!lI;:,\"^`'. ")
 
     with Image.open(filepath).convert("L") as image:
         image = image.filter(ImageFilter.GaussianBlur(radius=0.5))
@@ -41,7 +41,7 @@ def generate_ascii_art(filepath, max_width, max_height, rotate=True):
         division_factor = max(width / max_width, height / max_height * aspect_ratio, 1)
         image = image.resize((int(width / division_factor), int(height / division_factor * aspect_ratio)))
         width, height = image.size
-        brightness_array = np.array(image)
+        brightness_array = np.array(image) if not invert else 255 - np.array(image)
         section_length = 255 / len(punctuation)
 
         punctuation_matrix = []
@@ -67,20 +67,23 @@ def save_ascii_to_pdf(text, output_path, font_size, pagesize):
     c.save()
 
 if __name__ == "__main__":
-    if len(sys.argv) == 4:
+    if len(sys.argv) == 5:
         pagesize = get_pagesize(str(sys.argv[1]))
         filepath = str(sys.argv[2])
         output_path = str(sys.argv[3])
+        invert = bool(int(sys.argv[4]))
         font_size = 2
-    elif len(sys.argv) == 5:
+    elif len(sys.argv) == 6:
         pagesize = get_pagesize(str(sys.argv[1]))
         filepath = str(sys.argv[2])
         output_path = str(sys.argv[3])
-        font_size = int(sys.argv[4])
+        invert = bool(int(sys.argv[4]))
+        font_size = int(sys.argv[5])
     else:
         pagesize = pagesizes.A4
         filepath = "subject2.png"
         output_path = "output.pdf"
+        invert = False
         font_size = 2
 
     char_width = 0.6 * font_size
@@ -88,7 +91,8 @@ if __name__ == "__main__":
     page_width, page_height = pagesize
     max_width = page_width // char_width
     max_height = page_height // char_height
-
-    ascii_art = generate_ascii_art(filepath, max_width, max_height, False)
+    
+    ascii_art = generate_ascii_art(filepath, max_width, max_height, False, invert)
     save_ascii_to_pdf(ascii_art, output_path, font_size, pagesize)
+    print(ascii_art)
 
